@@ -21,6 +21,14 @@ grep -q "Caverne" app/dist/assets/*.js
 grep -q "Plage du fichier" app/dist/assets/*.js
 grep -q "Volume de la transition" app/dist/assets/*.js
 grep -q "music-chase-action" app/dist/assets/*.js
+grep -q "music-acoustic-blues" app/dist/assets/*.js
+grep -q "music-smooth-jazz-night" app/dist/assets/*.js
+grep -q "music-hoedown" app/dist/assets/*.js
+grep -q "music-pyramids" app/dist/assets/*.js
+grep -q "Jazz, blues & groove" app/dist/assets/*.js
+grep -q "Folk, country & banjo" app/dist/assets/*.js
+grep -q "Joyeux & léger" app/dist/assets/*.js
+! grep -q "music-a-chantar\|music-janequin-la-guerre\|music-monteverdi-battle\|music-o-frondens\|music-santa-maria" app/dist/assets/*.js
 grep -q "sfx-medieval-battle-ambience" app/dist/assets/*.js
 grep -q "Enregistrer mon propre bruitage" app/dist/assets/*.js
 grep -q "Commencer avant la voix" app/dist/assets/*.js
