@@ -1,19 +1,10 @@
-import type { AudioAsset, FadeLevel, PodcastBlock, PodcastProject, VoiceEffect, VolumeLevel } from '../types';
+import type { AudioAsset, FadeLevel, PodcastBlock, PodcastProject, TransitionPreset, VoiceEffect, VolumeLevel } from '../types';
 
 type RenderContext = AudioContext | OfflineAudioContext;
 
 const SAMPLE_RATE = 44100;
-const DEFAULT_BACKGROUND_ROLL = 2;
-
-function backgroundLeadIn(background: PodcastBlock['background']): number {
-  if (!background?.startBefore) return 0;
-  return Math.min(3, Math.max(1, background.startBeforeSeconds ?? DEFAULT_BACKGROUND_ROLL));
-}
-
-function backgroundTail(background: PodcastBlock['background']): number {
-  if (!background?.continueAfter) return 0;
-  return Math.min(3, Math.max(1, background.continueAfterSeconds ?? DEFAULT_BACKGROUND_ROLL));
-}
+const PRE_ROLL = 0.75;
+const POST_ROLL = 0.75;
 
 export interface TimelineEntry {
   block: PodcastBlock;
@@ -39,55 +30,23 @@ export function formatTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
-function voicePlaybackRate(effect: VoiceEffect): number {
-  return effect === 'deep' ? 0.9 : effect === 'high' ? 1.12 : effect === 'very-high' ? 1.24 : 1;
-}
-
-const JINGLE_VOICE_START: Record<NonNullable<PodcastBlock['jingle']>['style'], number> = {
-  dynamic: 0.65, adventure: 1.25, mysterious: 1.6, serious: 1, historical: 1.35, 'modern-radio': 0.8,
-};
-
-export function getBlockDuration(block: PodcastBlock, assets: AudioAsset[] = []): number {
+export function getBlockDuration(block: PodcastBlock): number {
   if (block.type === 'silence') return Math.max(0.1, block.duration);
-  if (block.type === 'transition') return Math.min(4, Math.max(0.05, block.duration));
+  if (block.type === 'transition') return Math.min(3, Math.max(0.5, block.duration));
   if (block.type === 'jingle') {
-    const legacyFallback = block.jingle?.length === 'short' ? 6 : block.jingle?.length === 'long' ? 15 : Math.max(2.5, block.duration || 10);
-    const voice = assets.find((asset) => asset.id === block.jingle?.voiceAssetId);
-    if (!voice) return legacyFallback;
-    const style = block.jingle?.style ?? 'modern-radio';
-    return Math.max(legacyFallback, JINGLE_VOICE_START[style] + voice.duration + 0.8);
+    return block.jingle?.length === 'short' ? 6 : block.jingle?.length === 'long' ? 15 : 10;
   }
-  const sourceDuration = Math.max(0, block.trimEnd - block.trimStart || block.duration);
-  const rate = block.type === 'voice' ? voicePlaybackRate(block.voiceEffect) : 1;
-  const coreDuration = sourceDuration / rate;
+  const core = Math.max(0, block.trimEnd - block.trimStart || block.duration);
   if (block.type === 'voice' && block.background) {
-    return coreDuration + backgroundLeadIn(block.background) + backgroundTail(block.background);
+    return core + (block.background.startBefore ? PRE_ROLL : 0) + (block.background.continueAfter ? POST_ROLL : 0);
   }
-  return coreDuration;
-}
-
-function getBlocksInPlaybackOrder(project: PodcastProject): PodcastBlock[] {
-  const knownSectionIds = new Set(project.sections.map((section) => section.id));
-  const blocksBySection = new Map<string, PodcastBlock[]>();
-  const orphanBlocks: PodcastBlock[] = [];
-
-  for (const block of project.blocks) {
-    if (!knownSectionIds.has(block.sectionId)) {
-      orphanBlocks.push(block);
-      continue;
-    }
-    const sectionBlocks = blocksBySection.get(block.sectionId) ?? [];
-    sectionBlocks.push(block);
-    blocksBySection.set(block.sectionId, sectionBlocks);
-  }
-
-  return project.sections.flatMap((section) => blocksBySection.get(section.id) ?? []).concat(orphanBlocks);
+  return core;
 }
 
 export function getTimeline(project: PodcastProject): TimelineEntry[] {
   let cursor = 0;
-  return getBlocksInPlaybackOrder(project).map((block) => {
-    const duration = getBlockDuration(block, project.assets);
+  return project.blocks.map((block) => {
+    const duration = getBlockDuration(block);
     const entry = { block, start: cursor, end: cursor + duration, duration };
     cursor += duration;
     return entry;
@@ -112,25 +71,8 @@ function volumeValue(level: VolumeLevel): number {
   return level === 'low' ? 0.62 : level === 'high' ? 1.22 : 0.92;
 }
 
-// SFX volume contrast: 20260722-sfx-volume-contrast-1
-function soundEffectVolumeValue(level: VolumeLevel): number {
-  return level === 'low' ? 0.08 : level === 'high' ? 1.05 : 0.28;
-}
-
-function voiceVolumeValue(level: VolumeLevel): number {
-  return level === 'low' ? 0.62 : level === 'high' ? 1.38 : 0.92;
-}
-
 function backgroundValue(level: 'very-low' | 'low' | 'present'): number {
-  return level === 'very-low' ? 0.045 : level === 'present' ? 0.23 : 0.14;
-}
-
-function voiceCueValue(level: 'low' | 'normal' | 'high'): number {
-  return level === 'low' ? 0.14 : level === 'high' ? 1.0 : 0.48;
-}
-
-function transitionVolumeValue(level: VolumeLevel | undefined): number {
-  return level === 'low' ? 0.11 : level === 'high' ? 0.7 : 0.34;
+  return level === 'very-low' ? 0.08 : level === 'present' ? 0.23 : 0.14;
 }
 
 function fadeSeconds(level: FadeLevel): number {
@@ -140,42 +82,13 @@ function fadeSeconds(level: FadeLevel): number {
 async function decodeAsset(context: RenderContext, asset: AudioAsset, cache: Map<string, AudioBuffer>): Promise<AudioBuffer> {
   const cached = cache.get(asset.id);
   if (cached) return cached;
-  if (!(asset.blob instanceof Blob)) {
-    throw new Error(`Le fichier audio « ${asset.name} » n’est plus lisible. Réimporte ce son dans le projet.`);
-  }
-  if (asset.blob.size === 0) {
-    throw new Error(`L’enregistrement « ${asset.name} » a été perdu par une ancienne sauvegarde Safari. Réenregistre uniquement cet élément.`);
-  }
-  try {
-    const original = await asset.blob.arrayBuffer();
-    const copy = original.slice(0);
-    const buffer = await context.decodeAudioData(copy);
-    cache.set(asset.id, buffer);
-    return buffer;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'format non reconnu';
-    throw new Error(`Impossible de décoder « ${asset.name} » : ${detail}`);
-  }
+  const buffer = await context.decodeAudioData(await asset.blob.arrayBuffer());
+  cache.set(asset.id, buffer);
+  return buffer;
 }
 
 function assetById(project: PodcastProject, id?: string): AudioAsset | undefined {
   return id ? project.assets.find((asset) => asset.id === id) : undefined;
-}
-
-function makeReverbImpulse(context: RenderContext, duration = 1.8, decay = 2.8): AudioBuffer {
-  const frames = Math.max(1, Math.floor(context.sampleRate * duration));
-  const impulse = context.createBuffer(2, frames, context.sampleRate);
-  let seed = 1729;
-  for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
-    const data = impulse.getChannelData(channel);
-    for (let index = 0; index < frames; index += 1) {
-      seed = (seed * 48271) % 2147483647;
-      const noise = (seed / 2147483647) * 2 - 1;
-      const envelope = Math.pow(1 - index / frames, decay);
-      data[index] = noise * envelope * (channel === 0 ? 0.9 : 0.82);
-    }
-  }
-  return impulse;
 }
 
 function connectVoiceEffect(context: RenderContext, source: AudioBufferSourceNode, effect: VoiceEffect, output: AudioNode): AudioNode {
@@ -193,45 +106,15 @@ function connectVoiceEffect(context: RenderContext, source: AudioBufferSourceNod
     const dry = context.createGain();
     const delay = context.createDelay(1);
     const feedback = context.createGain();
-    const dreamFilter = context.createBiquadFilter();
-    dry.gain.value = 0.84;
     delay.delayTime.value = 0.22;
-    feedback.gain.value = 0.24;
-    dreamFilter.type = 'lowpass';
-    dreamFilter.frequency.value = 2800;
+    feedback.gain.value = 0.28;
     source.connect(dry).connect(output);
     source.connect(delay).connect(feedback).connect(delay);
-    delay.connect(dreamFilter).connect(output);
-    return output;
-  }
-  if (effect === 'distant') {
-    const highpass = context.createBiquadFilter();
-    const lowpass = context.createBiquadFilter();
-    const dry = context.createGain();
-    const predelay = context.createDelay(0.3);
-    const convolver = context.createConvolver();
-    const wet = context.createGain();
-    const early = context.createDelay(0.3);
-    const earlyGain = context.createGain();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 170;
-    lowpass.type = 'lowpass';
-    lowpass.frequency.value = 3300;
-    dry.gain.value = 0.32;
-    predelay.delayTime.value = 0.045;
-    convolver.buffer = makeReverbImpulse(context);
-    wet.gain.value = 0.68;
-    early.delayTime.value = 0.105;
-    earlyGain.gain.value = 0.2;
-    source.connect(highpass).connect(lowpass);
-    lowpass.connect(dry).connect(output);
-    lowpass.connect(predelay).connect(convolver).connect(wet).connect(output);
-    lowpass.connect(early).connect(earlyGain).connect(output);
+    delay.connect(output);
     return output;
   }
   if (effect === 'deep') source.playbackRate.value = 0.9;
-  if (effect === 'high') source.playbackRate.value = 1.12;
-  if (effect === 'very-high') source.playbackRate.value = 1.24;
+  if (effect === 'high') source.playbackRate.value = 1.1;
   source.connect(output);
   return output;
 }
@@ -278,12 +161,47 @@ async function scheduleAsset(
   connectVoiceEffect(context, source, effect, gain);
   gain.connect(destination);
   const safeOffset = loop ? offset % buffer.duration : Math.min(offset, Math.max(0, buffer.duration - 0.01));
-  const playbackRate = voicePlaybackRate(effect);
-  source.start(start, safeOffset, loop ? undefined : Math.min(duration * playbackRate, buffer.duration - safeOffset));
+  source.start(start, safeOffset, loop ? undefined : Math.min(duration, buffer.duration - safeOffset));
   source.stop(start + duration + 0.03);
 }
 
+function transitionTone(context: RenderContext, destination: AudioNode, preset: TransitionPreset, start: number, duration: number): void {
+  const gain = context.createGain();
+  gain.connect(destination);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.linearRampToValueAtTime(0.34, start + Math.min(0.08, duration / 3));
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
 
+  if (preset === 'whoosh' || preset === 'page' || preset === 'radio') {
+    const frames = Math.max(1, Math.floor(context.sampleRate * duration));
+    const buffer = context.createBuffer(1, frames, context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < frames; index += 1) {
+      const progress = index / frames;
+      const noise = Math.random() * 2 - 1;
+      data[index] = noise * (preset === 'page' ? Math.sin(progress * Math.PI * 8) : 1) * (1 - progress);
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    const filter = context.createBiquadFilter();
+    filter.type = preset === 'radio' ? 'bandpass' : 'lowpass';
+    filter.frequency.setValueAtTime(preset === 'radio' ? 1800 : 350, start);
+    filter.frequency.exponentialRampToValueAtTime(preset === 'radio' ? 700 : 6500, start + duration);
+    source.connect(filter).connect(gain);
+    source.start(start);
+    return;
+  }
+
+  const oscillator = context.createOscillator();
+  oscillator.type = preset === 'bell' ? 'sine' : preset === 'percussion' ? 'square' : 'triangle';
+  const startFrequency = preset === 'mystery' ? 190 : preset === 'rise' ? 260 : 520;
+  const endFrequency = preset === 'mystery' ? 110 : preset === 'rise' ? 950 : 360;
+  oscillator.frequency.setValueAtTime(startFrequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
+  oscillator.connect(gain);
+  oscillator.start(start);
+  oscillator.stop(start + duration);
+}
 
 async function scheduleVoiceBlock(
   context: RenderContext,
@@ -296,12 +214,10 @@ async function scheduleVoiceBlock(
 ): Promise<void> {
   const voiceAsset = assetById(project, block.assetId);
   if (!voiceAsset) return;
-  const coreSourceDuration = Math.max(0, block.trimEnd - block.trimStart || block.duration);
-  const playbackRate = voicePlaybackRate(block.voiceEffect);
-  const coreTimelineDuration = coreSourceDuration / playbackRate;
-  const pre = backgroundLeadIn(block.background);
-  const post = backgroundTail(block.background);
-  const total = pre + coreTimelineDuration + post;
+  const coreDuration = Math.max(0, block.trimEnd - block.trimStart || block.duration);
+  const pre = block.background?.startBefore ? PRE_ROLL : 0;
+  const post = block.background?.continueAfter ? POST_ROLL : 0;
+  const total = pre + coreDuration + post;
   const remainingTotal = total - localOffset;
   if (remainingTotal <= 0) return;
 
@@ -313,7 +229,7 @@ async function scheduleVoiceBlock(
       const level = backgroundValue(block.background.level);
       const bgStart = start;
       const voiceStartRelative = Math.max(0, pre - localOffset);
-      const voiceRemaining = Math.max(0, coreTimelineDuration - Math.max(0, localOffset - pre));
+      const voiceRemaining = Math.max(0, coreDuration - Math.max(0, localOffset - pre));
       bgGain.gain.setValueAtTime(0.0001, bgStart);
       bgGain.gain.linearRampToValueAtTime(level * 1.35, bgStart + Math.min(0.5, remainingTotal / 4));
       if (voiceRemaining > 0) {
@@ -333,69 +249,24 @@ async function scheduleVoiceBlock(
   }
 
   const voiceTimelineStart = pre;
-  const consumedVoiceTimeline = Math.max(0, localOffset - voiceTimelineStart);
-  if (consumedVoiceTimeline < coreTimelineDuration) {
-    const consumedVoiceSource = Math.min(coreSourceDuration, consumedVoiceTimeline * playbackRate);
-    const delay = Math.max(0, voiceTimelineStart - localOffset);
-    const voiceDuration = (coreSourceDuration - consumedVoiceSource) / playbackRate;
-    await scheduleAsset(
-      context,
-      destination,
-      voiceAsset,
-      cache,
-      start + delay,
-      block.trimStart + consumedVoiceSource,
-      voiceDuration,
-      voiceVolumeValue(block.volume),
-      block.fadeIn === 'none' ? 'short' : block.fadeIn,
-      block.fadeOut === 'none' ? 'short' : block.fadeOut,
-      block.voiceEffect,
-    );
-  }
-
-  for (const cue of block.voiceCues ?? []) {
-    const cueAsset = assetById(project, cue.assetId);
-    if (!cueAsset) continue;
-    const cueAtSource = Math.min(Math.max(0, cue.at), coreSourceDuration);
-    const cueAtTimeline = cueAtSource / playbackRate;
-    const sourceStart = Math.min(Math.max(0, cue.sourceStart ?? 0), Math.max(0, cueAsset.duration - 0.05));
-    const legacyEnd = sourceStart + Math.max(0.05, cue.duration);
-    const sourceEnd = Math.min(cueAsset.duration, Math.max(sourceStart + 0.05, cue.sourceEnd ?? legacyEnd));
-    const selectedDuration = sourceEnd - sourceStart;
-    const cueDuration = Math.min(selectedDuration, Math.max(0, coreTimelineDuration - cueAtTimeline));
-    if (cueDuration <= 0) continue;
-    const cueTimelineStart = pre + cueAtTimeline;
-    if (localOffset >= cueTimelineStart + cueDuration) continue;
-    const consumedCue = Math.max(0, localOffset - cueTimelineStart);
-    const cueDelay = Math.max(0, cueTimelineStart - localOffset);
-    await scheduleAsset(
-      context,
-      destination,
-      cueAsset,
-      cache,
-      start + cueDelay,
-      sourceStart + consumedCue,
-      cueDuration - consumedCue,
-      voiceCueValue(cue.level),
-      'none',
-      'short',
-    );
-  }
+  const consumedVoice = Math.max(0, localOffset - voiceTimelineStart);
+  if (consumedVoice >= coreDuration) return;
+  const delay = Math.max(0, voiceTimelineStart - localOffset);
+  const voiceDuration = coreDuration - consumedVoice;
+  await scheduleAsset(
+    context,
+    destination,
+    voiceAsset,
+    cache,
+    start + delay,
+    block.trimStart + consumedVoice,
+    voiceDuration,
+    volumeValue(block.volume),
+    block.fadeIn === 'none' ? 'short' : block.fadeIn,
+    block.fadeOut === 'none' ? 'short' : block.fadeOut,
+    block.voiceEffect,
+  );
 }
-
-type JingleStyle = NonNullable<PodcastBlock['jingle']>['style'];
-
-const JINGLE_STYLE_PROFILES: Record<JingleStyle, {
-  voiceStart: number; intro: number; duck: number; outro: number; voice: number;
-  opening: number; closing: number; voiceEffect: VoiceEffect;
-}> = {
-  dynamic: { voiceStart: 0.65, intro: 2.9, duck: 1.05, outro: 2.35, voice: 1.08, opening: 1, closing: 1, voiceEffect: 'none' },
-  adventure: { voiceStart: 1.25, intro: 2.6, duck: 0.92, outro: 2.25, voice: 1.02, opening: 0.92, closing: 1.05, voiceEffect: 'none' },
-  mysterious: { voiceStart: 1.6, intro: 1.65, duck: 0.68, outro: 1.35, voice: 0.94, opening: 0.7, closing: 0.78, voiceEffect: 'echo' },
-  serious: { voiceStart: 1, intro: 1.45, duck: 0.62, outro: 1.25, voice: 1, opening: 0.55, closing: 0.62, voiceEffect: 'none' },
-  historical: { voiceStart: 1.35, intro: 1.85, duck: 0.78, outro: 1.55, voice: 0.96, opening: 0.84, closing: 0.88, voiceEffect: 'distant' },
-  'modern-radio': { voiceStart: 0.8, intro: 2.25, duck: 0.88, outro: 2, voice: 1.06, opening: 0.95, closing: 0.98, voiceEffect: 'phone' },
-};
 
 async function scheduleJingle(
   context: RenderContext,
@@ -406,11 +277,9 @@ async function scheduleJingle(
   start: number,
   localOffset: number,
 ): Promise<void> {
-  const total = getBlockDuration(block, project.assets);
+  const total = getBlockDuration(block);
   const remaining = total - localOffset;
   if (remaining <= 0) return;
-  const style = block.jingle?.style ?? 'modern-radio';
-  const profile = JINGLE_STYLE_PROFILES[style];
   const music = assetById(project, block.jingle?.musicAssetId);
   const voice = assetById(project, block.jingle?.voiceAssetId);
   const opening = assetById(project, block.jingle?.openingAssetId);
@@ -420,14 +289,14 @@ async function scheduleJingle(
     const level = backgroundValue(block.jingle?.musicLevel ?? 'low');
     const gain = context.createGain();
     gain.connect(destination);
-    const voiceStartNow = Math.max(0, profile.voiceStart - localOffset);
-    const voiceLength = voice ? Math.min(voice.duration, Math.max(0, total - profile.voiceStart - 0.8)) : 0;
+    const voiceStart = Math.max(0, 1.1 - localOffset);
+    const voiceLength = voice ? Math.min(voice.duration, Math.max(0, total - 2.1)) : 0;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.linearRampToValueAtTime(level * profile.intro, start + Math.min(style === 'mysterious' ? 0.8 : 0.35, remaining / 4));
+    gain.gain.linearRampToValueAtTime(level * 2.3, start + Math.min(0.45, remaining / 4));
     if (voiceLength > 0) {
-      gain.gain.linearRampToValueAtTime(level * profile.duck, start + voiceStartNow + 0.1);
-      gain.gain.setValueAtTime(level * profile.duck, start + voiceStartNow + voiceLength);
-      gain.gain.linearRampToValueAtTime(level * profile.outro, Math.min(start + remaining, start + voiceStartNow + voiceLength + 0.25));
+      gain.gain.linearRampToValueAtTime(level, start + voiceStart + 0.12);
+      gain.gain.setValueAtTime(level, start + voiceStart + voiceLength);
+      gain.gain.linearRampToValueAtTime(level * 1.8, Math.min(start + remaining, start + voiceStart + voiceLength + 0.25));
     }
     gain.gain.linearRampToValueAtTime(0.0001, start + remaining);
     const buffer = await decodeAsset(context, music, cache);
@@ -437,17 +306,20 @@ async function scheduleJingle(
     source.connect(gain);
     source.start(start, localOffset % buffer.duration);
     source.stop(start + remaining + 0.03);
+  } else {
+    transitionTone(context, destination, block.jingle?.style === 'mysterious' ? 'mystery' : 'rise', start, remaining);
   }
 
   if (opening && localOffset < Math.min(opening.duration, 1.5)) {
-    await scheduleAsset(context, destination, opening, cache, start, localOffset, Math.min(opening.duration - localOffset, remaining), profile.opening, 'short', 'short');
+    await scheduleAsset(context, destination, opening, cache, start, localOffset, Math.min(opening.duration - localOffset, remaining), 0.8, 'short', 'short');
   }
   if (voice) {
-    const consumed = Math.max(0, localOffset - profile.voiceStart);
-    const delay = Math.max(0, profile.voiceStart - localOffset);
-    const voiceDuration = Math.min(voice.duration - consumed, total - profile.voiceStart - 0.8);
+    const voiceStart = 1.1;
+    const consumed = Math.max(0, localOffset - voiceStart);
+    const delay = Math.max(0, voiceStart - localOffset);
+    const voiceDuration = Math.min(voice.duration - consumed, total - voiceStart - 0.8);
     if (voiceDuration > 0) {
-      await scheduleAsset(context, destination, voice, cache, start + delay, consumed, voiceDuration, profile.voice, 'short', 'short', profile.voiceEffect);
+      await scheduleAsset(context, destination, voice, cache, start + delay, consumed, voiceDuration, 1, 'short', 'short');
     }
   }
   if (closing) {
@@ -456,7 +328,7 @@ async function scheduleJingle(
       const delay = Math.max(0, closingStart - localOffset);
       const consumed = Math.max(0, localOffset - closingStart);
       const duration = Math.min(closing.duration - consumed, remaining - delay);
-      if (duration > 0) await scheduleAsset(context, destination, closing, cache, start + delay, consumed, duration, profile.closing, 'short', 'short');
+      if (duration > 0) await scheduleAsset(context, destination, closing, cache, start + delay, consumed, duration, 0.8, 'short', 'short');
     }
   }
 }
@@ -470,26 +342,11 @@ async function scheduleBlock(
   start: number,
   localOffset: number,
 ): Promise<void> {
-  const total = getBlockDuration(block, project.assets);
+  const total = getBlockDuration(block);
   if (localOffset >= total) return;
   if (block.type === 'silence') return;
   if (block.type === 'transition') {
-    const transitionAsset = assetById(project, block.assetId);
-    if (!transitionAsset) return;
-    const sourceOffset = block.trimStart + localOffset;
-    const duration = Math.min(4, total - localOffset);
-    await scheduleAsset(
-      context,
-      destination,
-      transitionAsset,
-      cache,
-      start,
-      sourceOffset,
-      duration,
-      transitionVolumeValue(block.transitionVolume),
-      'none',
-      'short',
-    );
+    transitionTone(context, destination, block.transitionPreset ?? 'fade', start, total - localOffset);
     return;
   }
   if (block.type === 'jingle') {
@@ -512,19 +369,17 @@ async function scheduleBlock(
     start,
     sourceOffset,
     duration,
-    block.type === 'sfx' ? soundEffectVolumeValue(block.volume) : volumeValue(block.volume),
+    volumeValue(block.volume),
     block.fadeIn,
     block.fadeOut,
   );
 }
 
-function referencedAssetIds(project: PodcastProject, offset = 0): Set<string> {
+function referencedAssetIds(project: PodcastProject): Set<string> {
   const ids = new Set<string>();
-  const blocks = getTimeline(project).filter((entry) => entry.end > offset).map((entry) => entry.block);
-  for (const block of blocks) {
+  for (const block of project.blocks) {
     if (block.assetId) ids.add(block.assetId);
     if (block.background?.assetId) ids.add(block.background.assetId);
-    for (const cue of block.voiceCues ?? []) ids.add(cue.assetId);
     if (block.jingle?.musicAssetId) ids.add(block.jingle.musicAssetId);
     if (block.jingle?.voiceAssetId) ids.add(block.jingle.voiceAssetId);
     if (block.jingle?.openingAssetId) ids.add(block.jingle.openingAssetId);
@@ -533,9 +388,9 @@ function referencedAssetIds(project: PodcastProject, offset = 0): Set<string> {
   return ids;
 }
 
-async function decodeProjectAssets(context: RenderContext, project: PodcastProject, offset = 0): Promise<Map<string, AudioBuffer>> {
+async function decodeProjectAssets(context: RenderContext, project: PodcastProject): Promise<Map<string, AudioBuffer>> {
   const cache = new Map<string, AudioBuffer>();
-  const ids = referencedAssetIds(project, offset);
+  const ids = referencedAssetIds(project);
   const assets = project.assets.filter((asset) => ids.has(asset.id));
   await Promise.all(assets.map((asset) => decodeAsset(context, asset, cache)));
   return cache;
@@ -561,15 +416,12 @@ async function scheduleProject(
 
 export async function playProject(project: PodcastProject, offset = 0): Promise<PlaybackController> {
   const context = new AudioContext();
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
-    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-  try {
-    const audioSession = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
-    if (audioSession) audioSession.type = 'playback';
-  } catch {
-    // L’API Audio Session n’existe pas sur toutes les versions de Safari.
-  }
+  // Safari iOS exige que resume() soit appelé pendant le geste utilisateur.
+  // L'appel est lancé immédiatement, avant tout décodage ou autre attente asynchrone.
+  const unlockPromise = context.state === 'suspended'
+    ? context.resume().catch(() => undefined)
+    : Promise.resolve();
 
   const compressor = context.createDynamicsCompressor();
   compressor.threshold.value = -8;
@@ -577,89 +429,28 @@ export async function playProject(project: PodcastProject, offset = 0): Promise<
   compressor.ratio.value = 8;
   compressor.attack.value = 0.003;
   compressor.release.value = 0.2;
-
-  let mediaElement: HTMLAudioElement | null = null;
-  let mediaStream: MediaStream | null = null;
-
-  if (isIOS && typeof context.createMediaStreamDestination === 'function') {
-    const mediaDestination = context.createMediaStreamDestination();
-    compressor.connect(mediaDestination);
-    mediaStream = mediaDestination.stream;
-
-    mediaElement = document.createElement('audio');
-    mediaElement.autoplay = true;
-    mediaElement.muted = false;
-    mediaElement.volume = 1;
-    mediaElement.setAttribute('playsinline', '');
-    mediaElement.setAttribute('webkit-playsinline', '');
-    mediaElement.setAttribute('aria-hidden', 'true');
-    mediaElement.style.position = 'fixed';
-    mediaElement.style.width = '1px';
-    mediaElement.style.height = '1px';
-    mediaElement.style.opacity = '0';
-    mediaElement.style.pointerEvents = 'none';
-    mediaElement.srcObject = mediaStream;
-    document.body.appendChild(mediaElement);
-
-    // Cette première tentative a lieu directement pendant le clic utilisateur.
-    void mediaElement.play().catch(() => undefined);
-  } else {
-    compressor.connect(context.destination);
-  }
-
-  // Déverrouillage Web Audio immédiat, lui aussi pendant le clic.
-  const unlockPromise = context.state === 'suspended'
-    ? context.resume().then(() => undefined)
-    : Promise.resolve();
-
-  const cleanupMedia = () => {
-    if (mediaElement) {
-      mediaElement.pause();
-      mediaElement.srcObject = null;
-      mediaElement.remove();
-      mediaElement = null;
-    }
-    mediaStream?.getTracks().forEach((track) => track.stop());
-    mediaStream = null;
-  };
+  compressor.connect(context.destination);
 
   try {
-    const cache = await decodeProjectAssets(context, project, offset);
+    // Tous les fichiers sont décodés avant de fixer l'instant de départ.
+    // La timeline ne peut ainsi plus commencer dans le passé pendant le décodage.
+    const cache = await decodeProjectAssets(context, project);
     await unlockPromise;
     if (context.state === 'suspended') await context.resume();
 
-    const startAt = context.currentTime + 0.25;
+    const startAt = context.currentTime + 0.2;
     await scheduleProject(context, compressor, project, offset, startAt, cache);
-
-    if (mediaElement) {
-      try {
-        await mediaElement.play();
-      } catch {
-        throw new Error('Safari a bloqué la sortie audio. Vérifie le volume multimédia puis touche de nouveau Lecture.');
-      }
-    }
-
     const totalDuration = getProjectDuration(project);
     return {
       context,
       totalDuration,
       startOffset: offset,
       getElapsed: () => Math.min(totalDuration, offset + Math.max(0, context.currentTime - startAt)),
-      pause: async () => {
-        mediaElement?.pause();
-        await context.suspend();
-      },
-      resume: async () => {
-        await context.resume();
-        if (mediaElement) await mediaElement.play();
-      },
-      stop: async () => {
-        cleanupMedia();
-        if (context.state !== 'closed') await context.close();
-      },
+      pause: () => context.suspend(),
+      resume: () => context.resume(),
+      stop: () => context.state === 'closed' ? Promise.resolve() : context.close(),
     };
   } catch (error) {
-    cleanupMedia();
     if (context.state !== 'closed') await context.close().catch(() => undefined);
     throw error;
   }
