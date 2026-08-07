@@ -15,7 +15,7 @@ assert "'very-high': 'Voix très aiguë'" in app
 assert "effect === 'high' ? 1.12" in engine
 assert "effect === 'very-high' ? 1.24" in engine
 
-assert "level === 'very-low' ? 0.045" in engine
+assert "backgroundMusicValue(block.background.volume, block.background.level)" in engine
 assert "level === 'high' ? 1.38" in engine
 assert "level === 'low' ? 0.14 : level === 'high' ? 1.0" in engine
 assert "level === 'low' ? 0.11 : level === 'high' ? 0.7" in engine
@@ -33,7 +33,7 @@ jingle_end = app.index('\n\nfunction AudioLibraryModal', jingle_start)
 jingle_editor = app[jingle_start:jingle_end]
 assert 'ChoiceSetting title="Durée"' not in jingle_editor
 assert 'getBlockDuration(block, project.assets)' in engine
-assert 'JINGLE_VOICE_START[style] + voice.duration + 0.8' in engine
+assert 'JINGLE_VOICE_START[style] + voice.duration + Math.max(JINGLE_TAIL_SECONDS, closingTail)' in engine
 
 assert 'Enregistrer mon propre bruitage' in app
 assert 'inline-sfx-recorder' in app
