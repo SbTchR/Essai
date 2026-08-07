@@ -419,6 +419,43 @@ new_get_duration = '''export function getBlockDuration(block: PodcastBlock, asse
 }'''
 engine = replace_once(engine, old_get_duration, new_get_duration, 'durée naturelle des jingles')
 engine = replace_once(engine, 'const duration = getBlockDuration(block);', 'const duration = getBlockDuration(block, project.assets);', 'durée de la timeline')
+old_timeline = '''export function getTimeline(project: PodcastProject): TimelineEntry[] {
+  let cursor = 0;
+  return project.blocks.map((block) => {
+    const duration = getBlockDuration(block, project.assets);
+    const entry = { block, start: cursor, end: cursor + duration, duration };
+    cursor += duration;
+    return entry;
+  });
+}'''
+new_timeline = '''function getBlocksInPlaybackOrder(project: PodcastProject): PodcastBlock[] {
+  const knownSectionIds = new Set(project.sections.map((section) => section.id));
+  const blocksBySection = new Map<string, PodcastBlock[]>();
+  const orphanBlocks: PodcastBlock[] = [];
+
+  for (const block of project.blocks) {
+    if (!knownSectionIds.has(block.sectionId)) {
+      orphanBlocks.push(block);
+      continue;
+    }
+    const sectionBlocks = blocksBySection.get(block.sectionId) ?? [];
+    sectionBlocks.push(block);
+    blocksBySection.set(block.sectionId, sectionBlocks);
+  }
+
+  return project.sections.flatMap((section) => blocksBySection.get(section.id) ?? []).concat(orphanBlocks);
+}
+
+export function getTimeline(project: PodcastProject): TimelineEntry[] {
+  let cursor = 0;
+  return getBlocksInPlaybackOrder(project).map((block) => {
+    const duration = getBlockDuration(block, project.assets);
+    const entry = { block, start: cursor, end: cursor + duration, duration };
+    cursor += duration;
+    return entry;
+  });
+}'''
+engine = replace_once(engine, old_timeline, new_timeline, 'ordre de lecture selon les sections')
 engine = replace_once(
     engine,
     "function volumeValue(level: VolumeLevel): number {\n  return level === 'low' ? 0.62 : level === 'high' ? 1.22 : 0.92;\n}",
