@@ -29,6 +29,9 @@ grep -q "Enregistrements réels" app/dist/assets/*.js
 grep -q "Chargement…" app/dist/assets/*.js
 grep -q "Coups à la porte" app/dist/assets/*.js
 grep -q "Pop vocal" app/dist/assets/*.js
+grep -q "Volume de la musique" app/dist/assets/*.js
+grep -q "0 % = muet" app/dist/assets/*.js
+grep -q "music-volume-slider" app/dist/assets/*.js app/dist/assets/*.css
 
 for id in \
   sfx-horse-gallop-pavement \

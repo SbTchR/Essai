@@ -10,7 +10,7 @@ engine = (ROOT / 'src' / 'audio' / 'engine.ts').read_text(encoding='utf-8')
 assert '20260722-sfx-volume-contrast-1' in engine
 assert "function soundEffectVolumeValue(level: VolumeLevel)" in engine
 assert "level === 'low' ? 0.08 : level === 'high' ? 1.05 : 0.28" in engine
-assert "block.type === 'sfx' ? soundEffectVolumeValue(block.volume) : volumeValue(block.volume)" in engine
+assert "block.type === 'sfx' ? soundEffectVolumeValue(block.volume) : standaloneMusicValue(block.musicVolume, block.volume)" in engine
 
 levels = {'low': 0.08, 'normal': 0.28, 'high': 1.05}
 low_to_normal_db = 20 * math.log10(levels['normal'] / levels['low'])
