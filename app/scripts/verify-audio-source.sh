@@ -26,6 +26,7 @@ python3 app/scripts/verify-guided-structure.py
 python3 app/scripts/verify-sfx-volume-contrast.py
 python3 app/scripts/verify-real-transitions-and-previews.py
 python3 app/scripts/verify-jingle-music-mixing.py
+python3 app/scripts/verify-vocal-magic-boost-and-jingle-timing.py
 node app/scripts/verify-section-playback-order.mjs
 
 for id in \

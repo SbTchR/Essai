@@ -49,3 +49,4 @@ python3 app/scripts/apply-guided-structure.py
 python3 app/scripts/apply-sfx-volume-contrast.py
 python3 app/scripts/apply-real-transitions-and-previews.py
 python3 app/scripts/apply-jingle-music-mixing.py
+python3 app/scripts/apply-vocal-magic-boost-and-jingle-timing.py

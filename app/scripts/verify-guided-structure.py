@@ -33,7 +33,7 @@ jingle_end = app.index('\n\nfunction AudioLibraryModal', jingle_start)
 jingle_editor = app[jingle_start:jingle_end]
 assert 'ChoiceSetting title="Durée"' not in jingle_editor
 assert 'getBlockDuration(block, project.assets)' in engine
-assert 'JINGLE_VOICE_START[style] + voice.duration + Math.max(JINGLE_TAIL_SECONDS, closingTail)' in engine
+assert 'jingleLeadIn(block) + voice.duration + Math.max(jingleTail(block), closingTail)' in engine
 
 assert 'Enregistrer mon propre bruitage' in app
 assert 'inline-sfx-recorder' in app

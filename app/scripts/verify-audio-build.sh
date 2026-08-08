@@ -40,6 +40,9 @@ grep -q "Pop vocal" app/dist/assets/*.js
 grep -q "Volume de la musique" app/dist/assets/*.js
 grep -q "0 % = muet" app/dist/assets/*.js
 grep -q "music-volume-slider" app/dist/assets/*.js app/dist/assets/*.css
+grep -q "Magic Boost" app/dist/assets/*.js
+grep -q "Musique avant la voix" app/dist/assets/*.js
+grep -q "Musique après la voix" app/dist/assets/*.js
 
 for id in \
   sfx-horse-gallop-pavement \
